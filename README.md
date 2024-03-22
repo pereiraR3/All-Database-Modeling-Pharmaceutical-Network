@@ -1,46 +1,22 @@
-# AnalisadorDeGramática
+# Modelagem de Dados de uma Rede Farmacêutica
 
-Projeto iniciado e concluído em 2024, preparado em menos de 1 semana. Requisitado pela disciplina de TELEFAC (Teoria das Linguagens Formais e Autômatos).
+Este projeto representa o esforço colaborativo de estudantes da Universidade Federal de Mato Grosso, concluído em abril de 2024, como parte dos requisitos da disciplina de Laboratório de Banco de Dados. O objetivo era desenvolver um sistema de banco de dados robusto para uma rede farmacêutica com múltiplas filiais espalhadas pelo Brasil, focando na melhoria da eficiência operacional e no gerenciamento de informações.
+
+## Ideia do Projeto
+
+O projeto visa a criação de um banco de dados detalhado que suporte as operações cotidianas de uma rede farmacêutica expansiva, incluindo gestão de estoques, controle de vendas, administração de filiais, e mais. A modelagem considera entidades como filiais, funcionários, produtos, clientes, e fornecedores, facilitando a tomada de decisões informadas e aprimorando a qualidade dos serviços oferecidos.
 
 ## Visão Geral
-O projeto não é nada mais do que a construção de um analisador sintático, dentre o qual deverá ser rapaz de receber entradas para atestar se pertence ou não à linguagem pré-determinada.
 
-## Definição da Gramática Livre de Contexto Usada
-
-Uma gramática livre de contexto \( G \) é definida pela 4-tupla \( G = (N, Σ, P, S) \), onde:
-
-- \( N \) é um conjunto de símbolos não-terminais.
-- \( Σ \) é um conjunto de símbolos terminais.
-- \( P \) é um conjunto de regras de produção.
-- \( S \) é o símbolo inicial.
-
-Para a dada gramática \( G \):
-
-- \( N = \{S, A, B\} \)
-- \( Σ = \{a, b\} \)
-- As regras de produção \( P \) são:
-  - S -&gt; aA
-  - A -&gt; bB | ε
-  - B -&gt; aA | bS
-
-A tabela de análise para esta gramática é a seguinte:
-
-|   | a            | b            | $   |
-|---|--------------|--------------|-----|
-| S | S -&gt; aA |              |     |
-| A |              | A -&gt; bB | A -&gt; ε |
-| B | B -&gt; aA | B -&gt; bS |     |
-
-Nota: \$ representa o final da cadeia de entrada.
-
+O sistema de banco de dados foi projetado para oferecer uma estrutura organizacional clara, permitindo fácil acesso e manipulação de dados críticos para a operação da rede farmacêutica. Ele abrange desde a modelagem conceitual até a implementação física do banco de dados, incluindo a criação de tabelas SQL, triggers, procedures, e muito mais.
 
 ## Tecnologias Utilizadas
 
-A tecnologia usada para desenvolver o projeto é a seguinte:
+O desenvolvimento do projeto foi baseado no seguinte stack tecnológico:
 
-<div style="display: inline_block" align= "center"><br>
-<img align="center" alt="C++" height="38" width="80" src="https://img.shields.io/badge/C++-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white">
-</div>
+- **SGBD (Sistema de Gerenciamento de Banco de Dados)**: PostgreSQL, devido à sua robustez e suporte extensivo a funcionalidades avançadas.
+- **Ferramentas de Modelagem**: Utilizamos ferramentas como o MIRO para a criação do Diagrama Entidade-Relacionamento (DER), facilitando a visualização e o planejamento do banco de dados.
+- **Linguagens de Programação**: SQL para a manipulação de dados e PL/pgSQL para a implementação de triggers e procedimentos armazenados, proporcionando automatização e integridade dos dados.
 
 ## Contato
 <strong> Membros Desenvolvedores do Projeto: </strong> Somos ambos estudantes de Ciência da Computação na Universidade Federal de Mato Grosso - Turma de 2022.
