@@ -1,0 +1,3052 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 14.11 (Ubuntu 14.11-1.pgdg22.04+1)
+-- Dumped by pg_dump version 16.2 (Ubuntu 16.2-1.pgdg22.04+1)
+
+-- Started on 2024-04-14 21:22:51 -04
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 6 (class 2615 OID 100796)
+-- Name: pgagent; Type: SCHEMA; Schema: -; Owner: root
+--
+
+CREATE SCHEMA pgagent;
+
+
+ALTER SCHEMA pgagent OWNER TO root;
+
+--
+-- TOC entry 3666 (class 0 OID 0)
+-- Dependencies: 6
+-- Name: SCHEMA pgagent; Type: COMMENT; Schema: -; Owner: root
+--
+
+COMMENT ON SCHEMA pgagent IS 'pgAgent system tables';
+
+
+--
+-- TOC entry 8 (class 2615 OID 120529)
+-- Name: public; Type: SCHEMA; Schema: -; Owner: root
+--
+
+-- *not* creating schema, since initdb creates it
+
+
+ALTER SCHEMA public OWNER TO root;
+
+--
+-- TOC entry 3667 (class 0 OID 0)
+-- Dependencies: 8
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: root
+--
+
+COMMENT ON SCHEMA public IS '';
+
+
+--
+-- TOC entry 7 (class 2615 OID 120306)
+-- Name: rede_farmaceutica; Type: SCHEMA; Schema: -; Owner: root
+--
+
+CREATE SCHEMA rede_farmaceutica;
+
+
+ALTER SCHEMA rede_farmaceutica OWNER TO root;
+
+--
+-- TOC entry 2 (class 3079 OID 100797)
+-- Name: pgagent; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pgagent WITH SCHEMA pgagent;
+
+
+--
+-- TOC entry 3669 (class 0 OID 0)
+-- Dependencies: 2
+-- Name: EXTENSION pgagent; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION pgagent IS 'A PostgreSQL job scheduler';
+
+
+--
+-- TOC entry 278 (class 1255 OID 120503)
+-- Name: atualizar_salario_mensal_funcionarios(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.atualizar_salario_mensal_funcionarios() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    funcionario_record RECORD;
+BEGIN
+    FOR funcionario_record IN SELECT id, salario_fixo, comissao FROM funcionario LOOP
+        DECLARE
+            total_vendas DECIMAL(10,2) DEFAULT 0;
+            comissao_total DECIMAL(10,2);
+        BEGIN
+            -- Calcula o total de vendas do funcionário no mês atual
+            SELECT COALESCE(SUM(valor_total), 0) INTO total_vendas
+            FROM venda
+            WHERE id_funcionario = funcionario_record.id
+            AND EXTRACT(MONTH FROM data_venda) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM data_venda) = EXTRACT(YEAR FROM CURRENT_DATE);
+
+            -- Calcula o total da comissão
+            comissao_total := total_vendas * funcionario_record.comissao / 100;
+
+            -- Atualiza o salário mensal do funcionário
+            UPDATE funcionario
+            SET salario_mensal = funcionario_record.salario_fixo + comissao_total
+            WHERE id = funcionario_record.id;
+        END;
+    END LOOP;
+END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.atualizar_salario_mensal_funcionarios() OWNER TO root;
+
+--
+-- TOC entry 3670 (class 0 OID 0)
+-- Dependencies: 278
+-- Name: FUNCTION atualizar_salario_mensal_funcionarios(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.atualizar_salario_mensal_funcionarios() IS '
+Esta função calcula e atualiza automaticamente o salário mensal dos funcionários 
+com base nas comissões obtidas das vendas do mês anterior. É ideal executar esta 
+função no início de cada mês para assegurar que os salários sejam ajustados 
+conforme o desempenho de vendas. ';
+
+
+--
+-- TOC entry 273 (class 1255 OID 120493)
+-- Name: atualizar_valor_total_venda_e_aplicar_desconto_aniversario(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.atualizar_valor_total_venda_e_aplicar_desconto_aniversario() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    valorDesconto DECIMAL(10,2) := 0.00; -- Inicializa o desconto com zero
+    valorProduto MONEY;
+    novoValorTotal MONEY;
+    aniversario BOOL;
+BEGIN
+    -- Verifica se hoje é aniversário do cliente e se o status_aniversario é TRUE
+    SELECT (EXTRACT(MONTH FROM data_nascimento) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(DAY FROM data_nascimento) = EXTRACT(DAY FROM CURRENT_DATE)
+            AND status_aniversario = TRUE)
+    INTO aniversario
+    FROM cliente
+    WHERE id = (SELECT id_cliente FROM venda WHERE id = NEW.id_venda);
+    
+    -- Determina o desconto aplicável
+    IF aniversario THEN
+        valorDesconto := 0.30; -- Desconto de 30% para aniversário
+        
+        -- Atualiza o status_aniversario para FALSE após aplicar o desconto
+        UPDATE cliente
+        SET status_aniversario = FALSE
+        WHERE id = (SELECT id_cliente FROM venda WHERE id = NEW.id_venda);
+    ELSE
+        valorDesconto := NEW.desconto; -- Utiliza o desconto original da venda, se não for aniversário
+    END IF;
+
+    -- Calcula o valor do produto vendido multiplicado pela quantidade e aplica o desconto
+    SELECT preco INTO valorProduto FROM produto WHERE id = NEW.id_produto;
+    novoValorTotal = valorProduto * NEW.quantidade * (1 - valorDesconto);
+
+    -- Atualiza o valor total na venda com ou sem desconto de aniversário
+    UPDATE venda
+    SET valor_total = valor_total + novoValorTotal
+    WHERE id = NEW.id_venda;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.atualizar_valor_total_venda_e_aplicar_desconto_aniversario() OWNER TO root;
+
+--
+-- TOC entry 3671 (class 0 OID 0)
+-- Dependencies: 273
+-- Name: FUNCTION atualizar_valor_total_venda_e_aplicar_desconto_aniversario(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.atualizar_valor_total_venda_e_aplicar_desconto_aniversario() IS '
+Esta trigger é acionada após a inserção de uma venda e verifica se o cliente está 
+fazendo aniversário, aplicando um desconto de 30% se for o caso. Ela também 
+atualiza o valor total da venda, considerando os descontos aplicados, e reseta o 
+status de aniversário do cliente para evitar descontos múltiplos no mesmo dia. ';
+
+
+--
+-- TOC entry 282 (class 1255 OID 120507)
+-- Name: descartar_completamente_produtolote_vencimento(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.descartar_completamente_produtolote_vencimento() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        -- Primeiro, exclui os lotes dos produtos que serão descartados
+        DELETE FROM lote
+        WHERE id_produto IN (
+            SELECT id FROM produto
+            WHERE data_validade BETWEEN CURRENT_DATE + INTERVAL '1 day' 
+            AND CURRENT_DATE + INTERVAL '30 days'
+        );
+        
+        -- Em seguida, exclui os produtos próximos do vencimento
+        DELETE FROM produto
+        WHERE data_validade BETWEEN CURRENT_DATE + INTERVAL '1 day' 
+        AND CURRENT_DATE + INTERVAL '30 days';
+    END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.descartar_completamente_produtolote_vencimento() OWNER TO root;
+
+--
+-- TOC entry 281 (class 1255 OID 120506)
+-- Name: descartar_produtolote_vencimento(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.descartar_produtolote_vencimento() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        UPDATE produto SET preco = preco * 0.7 
+        WHERE data_validade BETWEEN CURRENT_DATE + INTERVAL '1 day' AND CURRENT_DATE + INTERVAL '45 days';
+    END;
+    $$;
+
+
+ALTER FUNCTION rede_farmaceutica.descartar_produtolote_vencimento() OWNER TO root;
+
+--
+-- TOC entry 3672 (class 0 OID 0)
+-- Dependencies: 281
+-- Name: FUNCTION descartar_produtolote_vencimento(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.descartar_produtolote_vencimento() IS '
+Esta função exclui produtos e lotes que estão entre 1 e 30 dias antes
+da data de validade. A função é usada para garantir que produtos
+expirados sejam removidos do estoque e não sejam vendidos aos
+consumidores. ';
+
+
+--
+-- TOC entry 272 (class 1255 OID 120491)
+-- Name: diminuir_quantidade_no_lote(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.diminuir_quantidade_no_lote() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE 
+    loteRecente DATE; 
+BEGIN
+    -- Verifica se a quantidade atual no lote é suficiente
+    IF (SELECT quantidade FROM lote WHERE id_produto = NEW.id_produto ORDER BY data_despacho DESC LIMIT 1) >= NEW.quantidade THEN
+
+        -- Obtendo a data do despacho mais recente
+        SELECT data_despacho INTO loteRecente FROM lote WHERE id_produto = NEW.id_produto ORDER BY data_despacho DESC LIMIT 1;
+        
+        -- Diminui a quantidade do lote mais recente
+        UPDATE lote
+        SET quantidade = quantidade - NEW.quantidade
+        WHERE id_produto = NEW.id_produto AND data_despacho = loteRecente;
+		
+    ELSE
+        -- Lança um erro se a venda exceder a quantidade disponível no lote mais recente
+        RAISE NOTICE 'Quantidade insuficiente no lote para o produto %', NEW.id_produto;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.diminuir_quantidade_no_lote() OWNER TO root;
+
+--
+-- TOC entry 3673 (class 0 OID 0)
+-- Dependencies: 272
+-- Name: FUNCTION diminuir_quantidade_no_lote(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.diminuir_quantidade_no_lote() IS '
+Esta trigger é responsável por atualizar a quantidade de produtos em estoque no 
+lote mais recente após uma venda ser realizada. Ela verifica se a quantidade 
+disponível é suficiente e diminui essa quantidade no lote de acordo com a 
+quantidade vendida. Um erro é lançado caso a venda exceda a quantidade disponível. ';
+
+
+--
+-- TOC entry 275 (class 1255 OID 120497)
+-- Name: permissao_venda(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.permissao_venda() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+	func RECORD;
+BEGIN
+	SELECT * INTO func FROM funcionario WHERE id = new.id_funcionario;
+	IF func.cargo = 'Faxineira' THEN
+		raise notice 'Uma faxineira não pode realizar as vendas da farmácia';
+		RETURN NULL;
+	ELSE
+		RETURN NEW;
+	END IF;
+END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.permissao_venda() OWNER TO root;
+
+--
+-- TOC entry 3674 (class 0 OID 0)
+-- Dependencies: 275
+-- Name: FUNCTION permissao_venda(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.permissao_venda() IS '
+Esta trigger verifica o cargo do funcionário antes de permitir que uma venda seja registrada. 
+Se o funcionário tiver um cargo não autorizado a realizar vendas, como ''Faxineira'', a venda será
+bloqueada e um aviso será emitido. A venda prossegue normalmente para cargos autorizados, como 
+vendedores e farmacêuticos. ';
+
+
+--
+-- TOC entry 280 (class 1255 OID 120505)
+-- Name: resetar_status_aniversario_ano_novo(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.resetar_status_aniversario_ano_novo() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+
+BEGIN
+    -- Atualiza status_aniversario para NULL (ou FALSE) para todos os clientes
+    UPDATE cliente
+    SET status_aniversario = FALSE; 
+END;
+
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.resetar_status_aniversario_ano_novo() OWNER TO root;
+
+--
+-- TOC entry 3675 (class 0 OID 0)
+-- Dependencies: 280
+-- Name: FUNCTION resetar_status_aniversario_ano_novo(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.resetar_status_aniversario_ano_novo() IS '
+Esta função zera o status_aniversario de todos os clientes no primeiro dia de cada 
+ano novo. Garante que todos os clientes sejam elegíveis para receber descontos de
+aniversário novamente no próximo ano. ';
+
+
+--
+-- TOC entry 279 (class 1255 OID 120504)
+-- Name: setar_status_aniversario(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.setar_status_aniversario() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+
+BEGIN
+    -- Atualiza status_aniversario para TRUE para clientes que fazem aniversário hoje
+    UPDATE cliente
+    SET status_aniversario = TRUE
+    WHERE EXTRACT(MONTH FROM data_nascimento) = EXTRACT(MONTH FROM CURRENT_DATE)
+      AND EXTRACT(DAY FROM data_nascimento) = EXTRACT(DAY FROM CURRENT_DATE);
+END;
+
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.setar_status_aniversario() OWNER TO root;
+
+--
+-- TOC entry 3676 (class 0 OID 0)
+-- Dependencies: 279
+-- Name: FUNCTION setar_status_aniversario(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.setar_status_aniversario() IS '
+Atualiza o status_aniversario para TRUE para todos os clientes que fazem 
+aniversário na data atual. Isso permite que descontos de aniversário sejam 
+aplicados automaticamente na primeira compra do cliente no seu dia de aniversário. ';
+
+
+--
+-- TOC entry 277 (class 1255 OID 120501)
+-- Name: verifica_validade_produto(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.verifica_validade_produto() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Verifica se a data de despacho é posterior à data de validade do produto
+    IF NEW.data_despacho > (SELECT data_validade FROM produto WHERE id = NEW.id_produto) THEN
+        RAISE EXCEPTION 'Não é possível inserir lote com produtos vencidos.';
+    END IF;
+    RETURN NEW; -- Retorna o novo registro para ser inserido
+END;
+$$;
+
+
+ALTER FUNCTION rede_farmaceutica.verifica_validade_produto() OWNER TO root;
+
+--
+-- TOC entry 3677 (class 0 OID 0)
+-- Dependencies: 277
+-- Name: FUNCTION verifica_validade_produto(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.verifica_validade_produto() IS '
+Esta trigger é acionada antes de inserir um novo lote na tabela de lotes.
+Ela verifica se a data de despacho do lote é anterior à data de validade do produto associado.
+Caso a data de despacho seja posterior à data de validade, a inserção é bloqueada e uma exceção
+é lançada para prevenir o armazenamento de produtos vencidos. ';
+
+
+--
+-- TOC entry 276 (class 1255 OID 120499)
+-- Name: verificar_atualizar_contato_cliente(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.verificar_atualizar_contato_cliente() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+BEGIN
+    -- Verificação de formato de telefone
+    IF NEW.telefone !~ '^\d{11}$' THEN
+        RAISE EXCEPTION 'Formato de telefone inválido para cliente: %', NEW.telefone;
+    END IF;
+
+    -- Verificação de formato de email
+    IF NEW.email NOT LIKE '%@%' THEN
+        RAISE EXCEPTION 'Formato de email inválido para cliente: %', NEW.email;
+    END IF;
+
+    RETURN NEW;
+END;
+$_$;
+
+
+ALTER FUNCTION rede_farmaceutica.verificar_atualizar_contato_cliente() OWNER TO root;
+
+--
+-- TOC entry 3678 (class 0 OID 0)
+-- Dependencies: 276
+-- Name: FUNCTION verificar_atualizar_contato_cliente(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.verificar_atualizar_contato_cliente() IS '
+Esta trigger é utilizada para garantir que os dados de contato dos clientes, como telefone e e-mail, estejam
+em formatos válidos antes de serem inseridos ou atualizados na tabela de clientes. A função impede a inserção
+ou atualização de dados inválidos, lançando uma exceção se os formatos não atenderem aos critérios especificados. ';
+
+
+--
+-- TOC entry 274 (class 1255 OID 120495)
+-- Name: verificar_atualizar_contato_funcionario(); Type: FUNCTION; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE FUNCTION rede_farmaceutica.verificar_atualizar_contato_funcionario() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+BEGIN
+    -- Exemplo de verificação de formato de telefone
+    IF NEW.telefone !~ '^\d{11}$' THEN
+        RAISE EXCEPTION 'Formato de telefone inválido para funcionário: %', NEW.telefone;
+    END IF;
+
+    -- Exemplo de verificação de formato de email
+    IF NEW.email NOT LIKE '%@%' THEN
+        RAISE EXCEPTION 'Formato de email inválido para funcionário: %', NEW.email;
+    END IF;
+
+    RETURN NEW;
+END;
+$_$;
+
+
+ALTER FUNCTION rede_farmaceutica.verificar_atualizar_contato_funcionario() OWNER TO root;
+
+--
+-- TOC entry 3679 (class 0 OID 0)
+-- Dependencies: 274
+-- Name: FUNCTION verificar_atualizar_contato_funcionario(); Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON FUNCTION rede_farmaceutica.verificar_atualizar_contato_funcionario() IS '
+Esta trigger é usada para garantir que os dados de contato dos funcionários, 
+como telefone e e-mail, estejam em formatos válidos antes de serem inseridos ou atualizados na tabela de funcionários.
+A função impede a inserção ou atualização de dados inválidos, lançando uma exceção se os formatos não atenderem aos critérios especificados. ';
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 249 (class 1259 OID 120470)
+-- Name: classe; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.classe (
+    id integer NOT NULL,
+    nome character varying(100)
+);
+
+
+ALTER TABLE rede_farmaceutica.classe OWNER TO root;
+
+--
+-- TOC entry 3680 (class 0 OID 0)
+-- Dependencies: 249
+-- Name: TABLE classe; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.classe IS 'Tabela que representa a classe terapêutica de um medicamento.';
+
+
+--
+-- TOC entry 3681 (class 0 OID 0)
+-- Dependencies: 249
+-- Name: COLUMN classe.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.classe.id IS 'Chave primária da classe de um remédio.';
+
+
+--
+-- TOC entry 3682 (class 0 OID 0)
+-- Dependencies: 249
+-- Name: COLUMN classe.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.classe.nome IS 'O nome da classe terapêutica de um medicamento, indica para que tipo de doença ou condição é indicado.';
+
+
+--
+-- TOC entry 248 (class 1259 OID 120469)
+-- Name: classe_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.classe_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.classe_id_seq OWNER TO root;
+
+--
+-- TOC entry 3683 (class 0 OID 0)
+-- Dependencies: 248
+-- Name: classe_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.classe_id_seq OWNED BY rede_farmaceutica.classe.id;
+
+
+--
+-- TOC entry 235 (class 1259 OID 120348)
+-- Name: cliente; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.cliente (
+    id integer NOT NULL,
+    cpf character(11),
+    email character varying(100),
+    nome character varying(100) NOT NULL,
+    data_nascimento date,
+    telefone character(11),
+    endereco character varying(200),
+    status_aniversario boolean DEFAULT false
+);
+
+
+ALTER TABLE rede_farmaceutica.cliente OWNER TO root;
+
+--
+-- TOC entry 3684 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: TABLE cliente; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.cliente IS 'Entidade do DER que representa um cliente.';
+
+
+--
+-- TOC entry 3685 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.id IS 'Chave primária de um cliente.';
+
+
+--
+-- TOC entry 3686 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.cpf; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.cpf IS 'Número do documento que identifica o contribuinte perante a Receita Federal.';
+
+
+--
+-- TOC entry 3687 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.email; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.email IS 'Email do cliente.';
+
+
+--
+-- TOC entry 3688 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.nome IS 'Nome completo do cliente.';
+
+
+--
+-- TOC entry 3689 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.data_nascimento; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.data_nascimento IS 'Data de nascimento do cliente.';
+
+
+--
+-- TOC entry 3690 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.telefone; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.telefone IS 'Telefone do cliente.';
+
+
+--
+-- TOC entry 3691 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.endereco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.endereco IS 'Endereço do cliente.';
+
+
+--
+-- TOC entry 3692 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: COLUMN cliente.status_aniversario; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.cliente.status_aniversario IS 'Verifica se é aniversário do cliente.';
+
+
+--
+-- TOC entry 234 (class 1259 OID 120347)
+-- Name: cliente_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.cliente_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.cliente_id_seq OWNER TO root;
+
+--
+-- TOC entry 3693 (class 0 OID 0)
+-- Dependencies: 234
+-- Name: cliente_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.cliente_id_seq OWNED BY rede_farmaceutica.cliente.id;
+
+
+--
+-- TOC entry 233 (class 1259 OID 120329)
+-- Name: funcionario; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.funcionario (
+    id integer NOT NULL,
+    cpf character(11),
+    rg character(9),
+    nome character(100) NOT NULL,
+    email character varying(100),
+    telefone character(11),
+    certificado boolean NOT NULL,
+    cargo character varying(15) NOT NULL,
+    comissao numeric(5,2) NOT NULL,
+    salario_fixo money NOT NULL,
+    salario_mensal money NOT NULL,
+    id_filial integer NOT NULL,
+    endereco character varying(200) NOT NULL,
+    CONSTRAINT funcionario_salario_fixo_check CHECK ((salario_fixo > (0.00)::money))
+);
+
+
+ALTER TABLE rede_farmaceutica.funcionario OWNER TO root;
+
+--
+-- TOC entry 3694 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: TABLE funcionario; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.funcionario IS 'Entidade do DER que representa um funcionário.';
+
+
+--
+-- TOC entry 3695 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.id IS 'Chave primária de um funcionário.';
+
+
+--
+-- TOC entry 3696 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.cpf; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.cpf IS 'Número de documento que identifica o contribuinte perante a Receita Federal.';
+
+
+--
+-- TOC entry 3697 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.rg; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.rg IS 'Número de documento que identifica o contribuinte perante a SSP.';
+
+
+--
+-- TOC entry 3698 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.nome IS 'Nome completo do funcionário.';
+
+
+--
+-- TOC entry 3699 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.email; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.email IS 'E-mail do funcionário.';
+
+
+--
+-- TOC entry 3700 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.telefone; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.telefone IS 'Número de telefone do funcionário.';
+
+
+--
+-- TOC entry 3701 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.certificado; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.certificado IS 'Certificado de curso do funcionário (1 se ele possui e 0 se não possui).';
+
+
+--
+-- TOC entry 3702 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.cargo; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.cargo IS 'Cargo do funcionário na empresa filial.';
+
+
+--
+-- TOC entry 3703 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.comissao; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.comissao IS 'Comissão fixa recebida pelo funcionário por produto vendido, independente de qual seja.';
+
+
+--
+-- TOC entry 3704 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.salario_fixo; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.salario_fixo IS 'Salário fixo do funcionário.';
+
+
+--
+-- TOC entry 3705 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.salario_mensal; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.salario_mensal IS 'Salário mensal (calculado com a comissão) a ser recebido pelo funcionário.';
+
+
+--
+-- TOC entry 3706 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.id_filial; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.id_filial IS 'Chave estrangeira para a filial em que o funcionário trabalha.';
+
+
+--
+-- TOC entry 3707 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: COLUMN funcionario.endereco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.funcionario.endereco IS 'Endereço residencial do funcionário.';
+
+
+--
+-- TOC entry 228 (class 1259 OID 120308)
+-- Name: one_by_one_venda; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.one_by_one_venda
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.one_by_one_venda OWNER TO root;
+
+--
+-- TOC entry 236 (class 1259 OID 120359)
+-- Name: venda; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.venda (
+    id integer DEFAULT nextval('rede_farmaceutica.one_by_one_venda'::regclass) NOT NULL,
+    id_funcionario integer NOT NULL,
+    id_cliente integer NOT NULL,
+    data_venda date DEFAULT CURRENT_DATE NOT NULL,
+    valor_total money NOT NULL,
+    nota_fiscal text NOT NULL,
+    id_filial integer NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.venda OWNER TO root;
+
+--
+-- TOC entry 3708 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: TABLE venda; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.venda IS 'Entidade do DER que representa uma venda.';
+
+
+--
+-- TOC entry 3709 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.id IS 'Chave primária de uma venda.';
+
+
+--
+-- TOC entry 3710 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.id_funcionario; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.id_funcionario IS 'Chave estrangeira para o funcionário que realizou a venda.';
+
+
+--
+-- TOC entry 3711 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.id_cliente; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.id_cliente IS 'Chave estrangeira para o cliente que realizou a compra.';
+
+
+--
+-- TOC entry 3712 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.data_venda; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.data_venda IS 'Data de quando ocorre uma venda de um funcionário para um cliente.';
+
+
+--
+-- TOC entry 3713 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.valor_total; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.valor_total IS 'Valor total dos produtos vendidos por um funcionário.';
+
+
+--
+-- TOC entry 3714 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.nota_fiscal; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.nota_fiscal IS 'Nota fiscal emitida da venda para o cliente.';
+
+
+--
+-- TOC entry 3715 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: COLUMN venda.id_filial; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.venda.id_filial IS 'Chave estrangeira para a filial em que a venda pertence.';
+
+
+--
+-- TOC entry 254 (class 1259 OID 120524)
+-- Name: desempenho_funcionario; Type: MATERIALIZED VIEW; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE MATERIALIZED VIEW rede_farmaceutica.desempenho_funcionario AS
+ SELECT f.id,
+    f.nome,
+    count(v.id) AS total_vendas,
+    sum(v.valor_total) AS valor_vendas
+   FROM (rede_farmaceutica.funcionario f
+     JOIN rede_farmaceutica.venda v ON ((f.id = v.id_funcionario)))
+  GROUP BY f.id, f.nome
+  WITH NO DATA;
+
+
+ALTER MATERIALIZED VIEW rede_farmaceutica.desempenho_funcionario OWNER TO root;
+
+--
+-- TOC entry 3716 (class 0 OID 0)
+-- Dependencies: 254
+-- Name: MATERIALIZED VIEW desempenho_funcionario; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON MATERIALIZED VIEW rede_farmaceutica.desempenho_funcionario IS '
+Esta materialized view agrega informações sobre as vendas realizadas por cada funcionário, incluindo o número total de vendas e o valor total vendido, facilitando a avaliação de desempenho e a identificação de top performers na equipe de vendas. Essencial para gestão de recursos humanos e planejamento de incentivos.
+';
+
+
+--
+-- TOC entry 251 (class 1259 OID 120508)
+-- Name: detalhes_cliente; Type: VIEW; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE VIEW rede_farmaceutica.detalhes_cliente AS
+ SELECT c.id,
+    c.nome,
+    c.email,
+    c.telefone,
+    sum(v.valor_total) AS valor_total
+   FROM (rede_farmaceutica.cliente c
+     LEFT JOIN rede_farmaceutica.venda v ON ((c.id = v.id_cliente)))
+  GROUP BY c.id, c.nome, c.email, c.telefone;
+
+
+ALTER VIEW rede_farmaceutica.detalhes_cliente OWNER TO root;
+
+--
+-- TOC entry 3717 (class 0 OID 0)
+-- Dependencies: 251
+-- Name: VIEW detalhes_cliente; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON VIEW rede_farmaceutica.detalhes_cliente IS '
+Esta view combina informações de clientes com detalhes de suas compras para fornecer um panorama completo de cada cliente. Inclui dados pessoais e a soma total das vendas, facilitando análises detalhadas de comportamento do cliente e histórico de compras. Útil para análises financeiras e de marketing.
+';
+
+
+--
+-- TOC entry 240 (class 1259 OID 120394)
+-- Name: lote; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.lote (
+    id integer NOT NULL,
+    id_produto integer NOT NULL,
+    nome character varying(50) NOT NULL,
+    quantidade integer NOT NULL,
+    data_despacho date DEFAULT CURRENT_DATE NOT NULL,
+    id_filial integer NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.lote OWNER TO root;
+
+--
+-- TOC entry 3718 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: TABLE lote; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.lote IS 'Entidade do DER que representa um lote de produtos.';
+
+
+--
+-- TOC entry 3719 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.id IS 'Chave primária de um lote.';
+
+
+--
+-- TOC entry 3720 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.id_produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.id_produto IS 'Chave estrangeira do produto que está dentro do lote.';
+
+
+--
+-- TOC entry 3721 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.nome IS 'Nome designado para o lote de produtos.';
+
+
+--
+-- TOC entry 3722 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.quantidade; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.quantidade IS 'Quantidade de itens dentro de um lote de produtos.';
+
+
+--
+-- TOC entry 3723 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.data_despacho; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.data_despacho IS 'Data de despacho de uma entrega de determinado lote a uma filial.';
+
+
+--
+-- TOC entry 3724 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: COLUMN lote.id_filial; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.lote.id_filial IS 'Chave estrangeira para a filial em que o lote pertence.';
+
+
+--
+-- TOC entry 238 (class 1259 OID 120384)
+-- Name: produto; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.produto (
+    id integer NOT NULL,
+    nome character varying(100) NOT NULL,
+    preco money NOT NULL,
+    marca character varying(50) NOT NULL,
+    tipo_remedio character varying(20),
+    prescricao_medica boolean,
+    tipo_tarja character varying(20),
+    forma_de_administracao character varying(50),
+    composicao_remedio text,
+    data_validade date NOT NULL,
+    data_fabricacao date NOT NULL,
+    secao character varying(20) NOT NULL,
+    CONSTRAINT produto_preco_check CHECK ((preco > (0.00)::money))
+);
+
+
+ALTER TABLE rede_farmaceutica.produto OWNER TO root;
+
+--
+-- TOC entry 3725 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: TABLE produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.produto IS 'Entidade DER que representa um produto.';
+
+
+--
+-- TOC entry 3726 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.id IS 'Chave primária de um produto.';
+
+
+--
+-- TOC entry 3727 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.nome IS 'Nome de um produto da farmácia.';
+
+
+--
+-- TOC entry 3728 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.preco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.preco IS 'Preço para a compra de um produto da farmácia.';
+
+
+--
+-- TOC entry 3729 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.marca; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.marca IS 'Marca que criou o produto.';
+
+
+--
+-- TOC entry 3730 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.tipo_remedio; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.tipo_remedio IS 'Tipo que caracteriza o remédio, como antibiótico ou analgésico.';
+
+
+--
+-- TOC entry 3731 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.prescricao_medica; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.prescricao_medica IS 'Atributo booleano para comprovar se o produto necessita de receita.';
+
+
+--
+-- TOC entry 3732 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.tipo_tarja; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.tipo_tarja IS 'As cores das tarjas indicam a classificação de venda do medicamento.';
+
+
+--
+-- TOC entry 3733 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.forma_de_administracao; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.forma_de_administracao IS 'Diz respeito à forma de usar o remédio, se deve ser oral, injeção, etc.';
+
+
+--
+-- TOC entry 3734 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.composicao_remedio; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.composicao_remedio IS 'Serve para especificar se o remédio é original ou genérico.';
+
+
+--
+-- TOC entry 3735 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.data_validade; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.data_validade IS 'Data de validade do produto antes de se tornar não utilizável.';
+
+
+--
+-- TOC entry 3736 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.data_fabricacao; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.data_fabricacao IS 'Data em que o produto foi criado.';
+
+
+--
+-- TOC entry 3737 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: COLUMN produto.secao; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto.secao IS 'O produto está guardado em alguma seção da filial.';
+
+
+--
+-- TOC entry 252 (class 1259 OID 120513)
+-- Name: estoque_produto_validade; Type: VIEW; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE VIEW rede_farmaceutica.estoque_produto_validade AS
+ SELECT p.nome,
+    p.marca,
+    p.data_validade,
+    sum(l.quantidade) AS quantidade_estoque
+   FROM (rede_farmaceutica.produto p
+     JOIN rede_farmaceutica.lote l ON ((p.id = l.id_produto)))
+  WHERE (p.data_validade > CURRENT_DATE)
+  GROUP BY p.id, p.nome, p.marca, p.data_validade;
+
+
+ALTER VIEW rede_farmaceutica.estoque_produto_validade OWNER TO root;
+
+--
+-- TOC entry 3738 (class 0 OID 0)
+-- Dependencies: 252
+-- Name: VIEW estoque_produto_validade; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON VIEW rede_farmaceutica.estoque_produto_validade IS '
+Esta view facilita a visualização de produtos próximos da data de validade e seus níveis de estoque, permitindo melhor gestão de inventário e redução de perdas por expiração de produtos. Útil para departamentos de controle de qualidade e operações de estoque.
+';
+
+
+--
+-- TOC entry 227 (class 1259 OID 120307)
+-- Name: one_by_one_filial; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.one_by_one_filial
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.one_by_one_filial OWNER TO root;
+
+--
+-- TOC entry 229 (class 1259 OID 120309)
+-- Name: filial; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.filial (
+    id integer DEFAULT nextval('rede_farmaceutica.one_by_one_filial'::regclass) NOT NULL,
+    cnpj character varying(14),
+    site character varying(50),
+    telefone character varying(15),
+    endereco character varying(200)
+);
+
+
+ALTER TABLE rede_farmaceutica.filial OWNER TO root;
+
+--
+-- TOC entry 3739 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: TABLE filial; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.filial IS 'Entidade do DER que representa uma filial.';
+
+
+--
+-- TOC entry 3740 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: COLUMN filial.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.filial.id IS 'Chave primária de uma filial.';
+
+
+--
+-- TOC entry 3741 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: COLUMN filial.cnpj; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.filial.cnpj IS 'Número único designado pela Receita Federal na abertura legal de uma empresa.';
+
+
+--
+-- TOC entry 3742 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: COLUMN filial.site; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.filial.site IS 'Site para compras online de uma farmácia.';
+
+
+--
+-- TOC entry 3743 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: COLUMN filial.telefone; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.filial.telefone IS 'Telefone comercial da Filial.';
+
+
+--
+-- TOC entry 3744 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: COLUMN filial.endereco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.filial.endereco IS 'Endereço da localidade da filial.';
+
+
+--
+-- TOC entry 246 (class 1259 OID 120438)
+-- Name: fornece; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.fornece (
+    id integer NOT NULL,
+    id_fornecedor integer NOT NULL,
+    id_produto integer NOT NULL,
+    id_lote integer NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.fornece OWNER TO root;
+
+--
+-- TOC entry 3745 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: TABLE fornece; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.fornece IS 'Tabela que vem do relacionamento N-M entre fornecedor e lote.';
+
+
+--
+-- TOC entry 3746 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: COLUMN fornece.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornece.id IS 'Chave primária para identificar o fornecimento de um lote de produto de um fornecedor.';
+
+
+--
+-- TOC entry 3747 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: COLUMN fornece.id_fornecedor; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornece.id_fornecedor IS 'Chave estrangeira para relacionar o fornecedor a determinado lote de um produto.';
+
+
+--
+-- TOC entry 3748 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: COLUMN fornece.id_produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornece.id_produto IS 'Chave estrangeira para relacionar o fornecedor a determinado lote de um produto.';
+
+
+--
+-- TOC entry 3749 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: COLUMN fornece.id_lote; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornece.id_lote IS 'Chave estrangeira para relacionar o fornecedor a determinado lote de um produto.';
+
+
+--
+-- TOC entry 245 (class 1259 OID 120437)
+-- Name: fornece_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.fornece_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.fornece_id_seq OWNER TO root;
+
+--
+-- TOC entry 3750 (class 0 OID 0)
+-- Dependencies: 245
+-- Name: fornece_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.fornece_id_seq OWNED BY rede_farmaceutica.fornece.id;
+
+
+--
+-- TOC entry 231 (class 1259 OID 120318)
+-- Name: fornecedor; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.fornecedor (
+    id integer NOT NULL,
+    cnpj character(14),
+    nome character varying(100) NOT NULL,
+    telefone character(11) NOT NULL,
+    endereco character varying(200),
+    portfolio text NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.fornecedor OWNER TO root;
+
+--
+-- TOC entry 3751 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: TABLE fornecedor; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.fornecedor IS 'Entidade do DER que representa um fornecedor.';
+
+
+--
+-- TOC entry 3752 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.id IS 'Chave primária de um fornecedor.';
+
+
+--
+-- TOC entry 3753 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.cnpj; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.cnpj IS 'Número único designado pela Receita Federal na abertura legal de uma empresa.';
+
+
+--
+-- TOC entry 3754 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.nome IS 'Nome que se refere à empresa fornecedora de produtos.';
+
+
+--
+-- TOC entry 3755 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.telefone; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.telefone IS 'Telefone para entrar em contato com o fornecedor.';
+
+
+--
+-- TOC entry 3756 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.endereco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.endereco IS 'Endereço corresponde à posição geográfica da empresa fornecedora.';
+
+
+--
+-- TOC entry 3757 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: COLUMN fornecedor.portfolio; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.fornecedor.portfolio IS 'Portfólio se refere à lista de produtos que uma empresa fornecedora fornece.';
+
+
+--
+-- TOC entry 230 (class 1259 OID 120317)
+-- Name: fornecedor_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.fornecedor_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.fornecedor_id_seq OWNER TO root;
+
+--
+-- TOC entry 3758 (class 0 OID 0)
+-- Dependencies: 230
+-- Name: fornecedor_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.fornecedor_id_seq OWNED BY rede_farmaceutica.fornecedor.id;
+
+
+--
+-- TOC entry 232 (class 1259 OID 120328)
+-- Name: funcionario_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.funcionario_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.funcionario_id_seq OWNER TO root;
+
+--
+-- TOC entry 3759 (class 0 OID 0)
+-- Dependencies: 232
+-- Name: funcionario_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.funcionario_id_seq OWNED BY rede_farmaceutica.funcionario.id;
+
+
+--
+-- TOC entry 239 (class 1259 OID 120393)
+-- Name: lote_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.lote_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.lote_id_seq OWNER TO root;
+
+--
+-- TOC entry 3760 (class 0 OID 0)
+-- Dependencies: 239
+-- Name: lote_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.lote_id_seq OWNED BY rede_farmaceutica.lote.id;
+
+
+--
+-- TOC entry 242 (class 1259 OID 120412)
+-- Name: principio_ativo; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.principio_ativo (
+    id integer NOT NULL,
+    nome character varying(100) NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.principio_ativo OWNER TO root;
+
+--
+-- TOC entry 3761 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: TABLE principio_ativo; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.principio_ativo IS 'Entidade do DER que representa um princípio ativo de medicamentos.';
+
+
+--
+-- TOC entry 3762 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: COLUMN principio_ativo.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.principio_ativo.id IS 'Chave primária de um princípio ativo.';
+
+
+--
+-- TOC entry 3763 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: COLUMN principio_ativo.nome; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.principio_ativo.nome IS 'Nome do componente farmacologicamente ativo destinado a um medicamento.';
+
+
+--
+-- TOC entry 241 (class 1259 OID 120411)
+-- Name: principio_ativo_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.principio_ativo_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.principio_ativo_id_seq OWNER TO root;
+
+--
+-- TOC entry 3764 (class 0 OID 0)
+-- Dependencies: 241
+-- Name: principio_ativo_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.principio_ativo_id_seq OWNED BY rede_farmaceutica.principio_ativo.id;
+
+
+--
+-- TOC entry 237 (class 1259 OID 120383)
+-- Name: produto_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.produto_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.produto_id_seq OWNER TO root;
+
+--
+-- TOC entry 3765 (class 0 OID 0)
+-- Dependencies: 237
+-- Name: produto_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.produto_id_seq OWNED BY rede_farmaceutica.produto.id;
+
+
+--
+-- TOC entry 247 (class 1259 OID 120454)
+-- Name: produto_tem_principio; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.produto_tem_principio (
+    id_produto integer NOT NULL,
+    id_principio integer NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.produto_tem_principio OWNER TO root;
+
+--
+-- TOC entry 3766 (class 0 OID 0)
+-- Dependencies: 247
+-- Name: TABLE produto_tem_principio; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.produto_tem_principio IS 'Tabela que vem do relacionamento N-M entre produto e princípio ativo.';
+
+
+--
+-- TOC entry 3767 (class 0 OID 0)
+-- Dependencies: 247
+-- Name: COLUMN produto_tem_principio.id_produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto_tem_principio.id_produto IS 'Chave estrangeira do produto para relacionar com princípio.';
+
+
+--
+-- TOC entry 3768 (class 0 OID 0)
+-- Dependencies: 247
+-- Name: COLUMN produto_tem_principio.id_principio; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.produto_tem_principio.id_principio IS 'Chave estrangeira do principio para relacionar com produto.';
+
+
+--
+-- TOC entry 250 (class 1259 OID 120476)
+-- Name: tem_classe; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.tem_classe (
+    id_produto integer NOT NULL,
+    id_classe integer NOT NULL
+);
+
+
+ALTER TABLE rede_farmaceutica.tem_classe OWNER TO root;
+
+--
+-- TOC entry 3769 (class 0 OID 0)
+-- Dependencies: 250
+-- Name: TABLE tem_classe; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.tem_classe IS 'Tabela que vem do relacionamento N-M entre produto e classe.';
+
+
+--
+-- TOC entry 3770 (class 0 OID 0)
+-- Dependencies: 250
+-- Name: COLUMN tem_classe.id_produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_classe.id_produto IS 'Chave estrangeira do produto para relacionar com classe.';
+
+
+--
+-- TOC entry 3771 (class 0 OID 0)
+-- Dependencies: 250
+-- Name: COLUMN tem_classe.id_classe; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_classe.id_classe IS 'Chave estrangeira de classe para relacionar com produto.';
+
+
+--
+-- TOC entry 244 (class 1259 OID 120419)
+-- Name: tem_venda; Type: TABLE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TABLE rede_farmaceutica.tem_venda (
+    id integer NOT NULL,
+    id_produto integer NOT NULL,
+    id_venda integer NOT NULL,
+    quantidade integer NOT NULL,
+    preco money NOT NULL,
+    desconto numeric(5,2)
+);
+
+
+ALTER TABLE rede_farmaceutica.tem_venda OWNER TO root;
+
+--
+-- TOC entry 3772 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: TABLE tem_venda; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON TABLE rede_farmaceutica.tem_venda IS 'Tabela que vem do relacionamento N-M entre venda e produto.';
+
+
+--
+-- TOC entry 3773 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.id; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.id IS 'Chave primária de um tem_venda.';
+
+
+--
+-- TOC entry 3774 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.id_produto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.id_produto IS 'Chave estrangeira do produto, na qual passou por uma determinada venda.';
+
+
+--
+-- TOC entry 3775 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.id_venda; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.id_venda IS 'Chave estrangeira da venda, na qual vendeu determinada quantidade de um produto.';
+
+
+--
+-- TOC entry 3776 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.quantidade; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.quantidade IS 'Quantidade vendida de um determinado produto.';
+
+
+--
+-- TOC entry 3777 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.preco; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.preco IS 'Valor referente ao total de uma determinada quantidade de um produto.';
+
+
+--
+-- TOC entry 3778 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: COLUMN tem_venda.desconto; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON COLUMN rede_farmaceutica.tem_venda.desconto IS 'Valor referente ao desconto na compra de determinado produto.';
+
+
+--
+-- TOC entry 243 (class 1259 OID 120418)
+-- Name: tem_venda_id_seq; Type: SEQUENCE; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE SEQUENCE rede_farmaceutica.tem_venda_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE rede_farmaceutica.tem_venda_id_seq OWNER TO root;
+
+--
+-- TOC entry 3779 (class 0 OID 0)
+-- Dependencies: 243
+-- Name: tem_venda_id_seq; Type: SEQUENCE OWNED BY; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER SEQUENCE rede_farmaceutica.tem_venda_id_seq OWNED BY rede_farmaceutica.tem_venda.id;
+
+
+--
+-- TOC entry 253 (class 1259 OID 120518)
+-- Name: vendas_mensais; Type: MATERIALIZED VIEW; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE MATERIALIZED VIEW rede_farmaceutica.vendas_mensais AS
+ SELECT EXTRACT(month FROM venda.data_venda) AS mes,
+    EXTRACT(year FROM venda.data_venda) AS ano,
+    sum(venda.valor_total) AS total_vendas
+   FROM rede_farmaceutica.venda
+  GROUP BY (EXTRACT(month FROM venda.data_venda)), (EXTRACT(year FROM venda.data_venda))
+  WITH NO DATA;
+
+
+ALTER MATERIALIZED VIEW rede_farmaceutica.vendas_mensais OWNER TO root;
+
+--
+-- TOC entry 3780 (class 0 OID 0)
+-- Dependencies: 253
+-- Name: MATERIALIZED VIEW vendas_mensais; Type: COMMENT; Schema: rede_farmaceutica; Owner: root
+--
+
+COMMENT ON MATERIALIZED VIEW rede_farmaceutica.vendas_mensais IS '
+Esta materialized view armazena os totais de vendas mensais, organizados por mês e ano, permitindo consultas rápidas e eficientes sobre dados históricos de vendas sem sobrecarregar a operação normal com cálculos repetitivos. Ideal para análise financeira e acompanhamento de tendências de vendas ao longo do tempo.
+';
+
+
+--
+-- TOC entry 3393 (class 2604 OID 120473)
+-- Name: classe id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.classe ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.classe_id_seq'::regclass);
+
+
+--
+-- TOC entry 3383 (class 2604 OID 120351)
+-- Name: cliente id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.cliente ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.cliente_id_seq'::regclass);
+
+
+--
+-- TOC entry 3392 (class 2604 OID 120441)
+-- Name: fornece id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornece ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.fornece_id_seq'::regclass);
+
+
+--
+-- TOC entry 3381 (class 2604 OID 120321)
+-- Name: fornecedor id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornecedor ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.fornecedor_id_seq'::regclass);
+
+
+--
+-- TOC entry 3382 (class 2604 OID 120332)
+-- Name: funcionario id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.funcionario_id_seq'::regclass);
+
+
+--
+-- TOC entry 3388 (class 2604 OID 120397)
+-- Name: lote id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.lote ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.lote_id_seq'::regclass);
+
+
+--
+-- TOC entry 3390 (class 2604 OID 120415)
+-- Name: principio_ativo id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.principio_ativo ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.principio_ativo_id_seq'::regclass);
+
+
+--
+-- TOC entry 3387 (class 2604 OID 120387)
+-- Name: produto id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.produto ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.produto_id_seq'::regclass);
+
+
+--
+-- TOC entry 3391 (class 2604 OID 120422)
+-- Name: tem_venda id; Type: DEFAULT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_venda ALTER COLUMN id SET DEFAULT nextval('rede_farmaceutica.tem_venda_id_seq'::regclass);
+
+
+--
+-- TOC entry 3342 (class 0 OID 100798)
+-- Dependencies: 212
+-- Data for Name: pga_jobagent; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_jobagent (jagpid, jaglogintime, jagstation) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3343 (class 0 OID 100807)
+-- Dependencies: 214
+-- Data for Name: pga_jobclass; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_jobclass (jclid, jclname) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3344 (class 0 OID 100817)
+-- Dependencies: 216
+-- Data for Name: pga_job; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_job (jobid, jobjclid, jobname, jobdesc, jobhostagent, jobenabled, jobcreated, jobchanged, jobagentid, jobnextrun, joblastrun) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3346 (class 0 OID 100865)
+-- Dependencies: 220
+-- Data for Name: pga_schedule; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_schedule (jscid, jscjobid, jscname, jscdesc, jscenabled, jscstart, jscend, jscminutes, jschours, jscweekdays, jscmonthdays, jscmonths) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3347 (class 0 OID 100893)
+-- Dependencies: 222
+-- Data for Name: pga_exception; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_exception (jexid, jexscid, jexdate, jextime) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3348 (class 0 OID 100907)
+-- Dependencies: 224
+-- Data for Name: pga_joblog; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_joblog (jlgid, jlgjobid, jlgstatus, jlgstart, jlgduration) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3345 (class 0 OID 100841)
+-- Dependencies: 218
+-- Data for Name: pga_jobstep; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_jobstep (jstid, jstjobid, jstname, jstdesc, jstenabled, jstkind, jstcode, jstconnstr, jstdbname, jstonerror, jscnextrun) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3349 (class 0 OID 100923)
+-- Dependencies: 226
+-- Data for Name: pga_jobsteplog; Type: TABLE DATA; Schema: pgagent; Owner: root
+--
+
+COPY pgagent.pga_jobsteplog (jslid, jsljlgid, jsljstid, jslstatus, jslresult, jslstart, jslduration, jsloutput) FROM stdin;
+\.
+
+
+--
+-- TOC entry 3657 (class 0 OID 120470)
+-- Dependencies: 249
+-- Data for Name: classe; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.classe (id, nome) FROM stdin;
+1	inotrópicos
+2	vasodilatadores
+3	anticoagulantes
+4	antipiréticos
+5	analgésicos
+6	paracetamol
+7	Higiene Pessoal
+8	Cuidados com a Pele
+\.
+
+
+--
+-- TOC entry 3643 (class 0 OID 120348)
+-- Dependencies: 235
+-- Data for Name: cliente; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.cliente (id, cpf, email, nome, data_nascimento, telefone, endereco, status_aniversario) FROM stdin;
+1	12345678901	cliente1@email.com	Cliente Um	1985-01-01	11987654321	Endereço Cliente 1	f
+2	23456789012	cliente2@email.com	Cliente Dois	1990-02-02	21987654322	Endereço Cliente 2	f
+3	34567890123	cliente3@email.com	Cliente Três	1995-03-03	31987654323	Endereço Cliente 3	f
+4	45678901234	cliente4@email.com	Cliente Quatro	2000-04-04	41987654324	Endereço Cliente 4	f
+5	56789012345	cliente5@email.com	Cliente Cinco	2005-05-05	51987654325	Endereço Cliente 5	f
+6	1234567213 	cliente13@email.com	Cliente Um	1985-01-01	11987654211	Endereço Cliente 2	f
+7	2345672822 	cliente66@email.com	Cliente Dois	1990-02-02	21987643221	Endereço Cliente 2	f
+8	3456789232 	client11@email.com	Cliente Três	1995-03-03	31198765323	Endereço Cliente 2	f
+9	4567891242 	cliente22@email.com	Cliente Quatro	2000-04-04	41986543214	Endereço Cliente 2	f
+10	5678912252 	cliente21@email.com	Cliente Cinco	2005-05-05	51987514325	Endereço Cliente 2	f
+11	1234563213 	cliente113@email.com	Cliente 11	1985-10-23	11987165421	Endereço Cliente 2	f
+12	2345372822 	cliente616@email.com	Cliente 11	1993-02-22	12198764322	Endereço Cliente 2	f
+13	3156789232 	client111@email.com	Cliente 11	1995-03-23	11981765323	Endereço Cliente 2	f
+14	4167391242 	cliente221@email.com	Cliente 11	2004-03-24	41986543124	Endereço Cliente 2	f
+15	5178312252 	cliente211@email.com	Cliente 11	2005-02-05	51987543125	Endereço Cliente 2	f
+16	1244563214 	cliente112@email.com	Cliente 31	1985-04-23	11947654121	Endereço Cliente 2	f
+17	2445372824 	cliente612@email.com	Cliente 31	1993-04-22	21947643122	Endereço Cliente 2	f
+18	3146789242 	client121@email.com	Cliente 31	1995-04-23	11947653123	Endereço Cliente 2	f
+19	4147391242 	cliente222@email.com	Cliente 31	2004-04-24	41946541324	Endereço Cliente 2	f
+20	5478312254 	cliente212@email.com	Cliente 31	2005-12-05	51947543125	Endereço Cliente 2	f
+21	7234563213 	cliente11w@email.com	Cliente 113	1985-10-23	11981765421	Endereço Cliente 11	f
+22	7345372822 	cliente61w@email.com	Cliente 616	1993-02-22	21987641322	Endereço Cliente 616	f
+23	7456789232 	client11w@email.com	Cliente 111	1995-03-23	13198765323	Endereço Cliente 111	f
+24	7567391242 	cliente22w@email.com	Cliente 221	2004-03-02	14198654324	Endereço Cliente 221	f
+25	7678312252 	cliente21w@email.com	Cliente 211	2003-10-25	15198754325	Endereço Cliente 211	f
+26	7234663213 	clientetaew@email.com	Cliente 113	1985-10-23	11987651421	Endereço Cliente 11	f
+27	7346372822 	clientetdwe@email.com	Cliente 616	1993-02-22	21987164322	Endereço Cliente 616	f
+28	7456789632 	client1tsew@email.com	Cliente 111	1995-03-23	31987653231	Endereço Cliente 111	f
+29	7567391642 	clientetwewd@email.com	Cliente 221	2004-03-02	41986543241	Endereço Cliente 221	f
+30	7668612252 	clientetaww@email.com	Cliente 211	2003-10-25	51987543251	Endereço Cliente 211	f
+31	7274673213 	clientetaesw@email.com	Cliente 113	1985-10-23	11947644121	Endereço Cliente 11	f
+32	7347372722 	clientetdwse@email.com	Cliente 616	1993-02-22	21984643122	Endereço Cliente 616	f
+33	7457789732 	client1tsesw@email.com	Cliente 111	1995-03-23	31947614323	Endereço Cliente 111	f
+34	7577391742 	clientetweswd@email.com	Cliente 221	2004-03-02	41486544124	Endereço Cliente 221	f
+35	7678672272 	clientetawsw@email.com	Cliente 211	2003-10-25	51987441425	Endereço Cliente 211	f
+36	7234863283 	clienteta8djw@email.com	Cliente 113	1985-10-23	11987651821	Endereço Cliente 11	f
+37	7386872822 	clientetd8dde@email.com	Cliente 616	1993-02-22	21918864322	Endereço Cliente 616	f
+38	7456889832 	client1t8hewd@email.com	Cliente 111	1995-03-23	31987165823	Endereço Cliente 111	f
+39	7567381842 	clientetw8ehswd@email.com	Cliente 221	2004-03-02	41881684324	Endereço Cliente 221	f
+40	7668612852 	clientetaa8w@email.com	Cliente 211	2003-10-25	51981758325	Endereço Cliente 211	f
+41	7294669213 	cliente9ew@email.com	Cliente 113	1985-10-23	11997169421	Endereço Cliente 11	f
+42	734697922  	clientet9we@email.com	Cliente 616	1993-02-22	21991769322	Endereço Cliente 616	f
+43	7496789632 	client19s9w@email.com	Cliente 111	1995-03-23	31981965923	Endereço Cliente 111	f
+44	75693942   	clientetw9d@email.com	Cliente 221	2004-03-02	41981954324	Endereço Cliente 221	f
+45	7968912952 	cliente9w@email.com	Cliente 211	2003-10-25	51997159325	Endereço Cliente 211	f
+46	7294339313 	cliente9ew3@email.com	Cliente 113	1985-10-23	11913991421	Endereço Cliente 11	f
+47	7334637322 	clientet9w3e@email.com	Cliente 616	1993-02-22	21936932112	Endereço Cliente 616	f
+48	7496738332 	client193s9w@email.com	Cliente 111	1995-03-23	31983311923	Endereço Cliente 111	f
+49	7536939342 	clientetw93d@email.com	Cliente 221	2004-03-02	41931134324	Endereço Cliente 221	f
+50	7968932352 	cliente39w@email.com	Cliente 211	2003-10-25	51199715325	Endereço Cliente 211	f
+\.
+
+
+--
+-- TOC entry 3637 (class 0 OID 120309)
+-- Dependencies: 229
+-- Data for Name: filial; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.filial (id, cnpj, site, telefone, endereco) FROM stdin;
+1	123456780001	site1.com	11987654321	Endereço da Filial 1
+2	123456780002	site2.com	21987654321	Endereço da Filial 2
+3	123456780003	site3.com	31987654321	Endereço da Filial 3
+4	123456780004	site4.com	41987654321	Endereço da Filial 4
+5	123456780005	site5.com	51987654321	Endereço da Filial 5
+6	123456780006	site6.com	61987654321	Endereço da Filial 6
+7	123456780007	site7.com	71987654321	Endereço da Filial 7
+8	123456780008	site8.com	81987654321	Endereço da Filial 8
+9	123456780009	site9.com	91987654321	Endereço da Filial 9
+10	123456780010	site10.com	101987654321	Endereço da Filial 10
+\.
+
+
+--
+-- TOC entry 3654 (class 0 OID 120438)
+-- Dependencies: 246
+-- Data for Name: fornece; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.fornece (id, id_fornecedor, id_produto, id_lote) FROM stdin;
+1	1	1	1
+2	2	2	2
+3	3	3	3
+4	4	4	4
+5	5	5	5
+6	6	6	6
+7	7	7	7
+8	1	8	8
+9	2	9	9
+10	3	10	10
+11	4	11	11
+12	5	12	12
+13	6	13	13
+14	7	14	14
+15	1	15	15
+16	2	16	16
+17	3	17	17
+18	4	18	18
+19	5	19	19
+20	6	20	20
+21	7	21	21
+22	1	25	25
+23	2	26	26
+24	3	27	27
+25	4	28	28
+26	5	29	29
+27	6	30	30
+28	7	31	31
+29	1	35	35
+\.
+
+
+--
+-- TOC entry 3639 (class 0 OID 120318)
+-- Dependencies: 231
+-- Data for Name: fornecedor; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.fornecedor (id, cnpj, nome, telefone, endereco, portfolio) FROM stdin;
+1	87456321000189	LAB. bate bem	11987654321	Rua das Tecnologias, 500, São Paulo, SP	Coracao bem.
+2	76849531000155	LAB. PRINCIPA	21987654322	Estrada dos Agricultores, 120, Campinas, SP	Nos temos a solucao.
+3	65849321000122	VIVABEM LAB.	31987654323	Avenida dos Construtores, 750, Belo Horizonte, MG	menos dor
+4	54938210001299	BioHealth Equipamentos	41987654324	Rua dos Médicos, 200, Rio de Janeiro, RJ	Equipamentos médicos e hospitalares.
+5	43021198000188	LAB. VIVA	51987654325	Rua da Moda, 450, Fortaleza, CE	 viva bem 
+6	32109876000199	LAB. dorme bem	61987654326	Parque Tecnológico, 1080, Salvador, BA	Solucoes para o sono
+7	21098765000177	FARMALEV	71987654327	Boulevard Gourmet, 330, Porto Alegre, RS	FARMA
+8	21098765000173	Fini brazil	11387654321	Rua das lagrimas , 230, Porto Alegre, RS	Suprimento de doces
+9	23231942388322	Come bem	51287154331	Rua das Parques , 130, Mato-Groso, MT	Doces & bebidas
+10	34573236842233	LAB. sobreviva	33112496954	Rua das Parques , 131, Mato-Groso, MT	SEM DOR
+\.
+
+
+--
+-- TOC entry 3641 (class 0 OID 120329)
+-- Dependencies: 233
+-- Data for Name: funcionario; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.funcionario (id, cpf, rg, nome, email, telefone, certificado, cargo, comissao, salario_fixo, salario_mensal, id_filial, endereco) FROM stdin;
+1	12345678901	987654321	João Silva                                                                                          	joao.silva@email.com	11987654321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	1	Endereço 1
+2	23456789012	876543219	Maria Oliveira                                                                                      	maria.oliveira@email.com	21987654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	1	Endereço 2
+3	34567890123	765432198	Ana Costa                                                                                           	ana.costa@email.com	31987654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	1	Endereço 3
+4	45678901234	654321987	Carlos Dias                                                                                         	carlos.dias@email.com	41987654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	1	Endereço 4
+5	56789012345	543219876	Teresa Gonçalves                                                                                    	teresa.goncalves@email.com	51987654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	1	Endereço 5
+6	56789012145	543219176	Teresa                                                                                              	teresa.@email.com	51987654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	2	Endereço 5
+7	45678901134	654321187	Carlos                                                                                              	carlos.@email.com	41987654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	2	Endereço 4
+8	34567890223	765432298	Ana                                                                                                 	ana.@email.com	31987654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	2	Endereço 3
+9	23456789312	876543119	Maria                                                                                               	maria.@email.com	21987654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	2	Endereço 2
+10	12345678301	987654121	João                                                                                                	joao.@email.com	11987654321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	2	Endereço 1
+11	50789012145	513219176	Teresa dias                                                                                         	teresa.dias@email.com	51980650121	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	4	Endereço 5
+12	45678911134	611321187	Carlos dias                                                                                         	carlos.diaSs@email.com	41087014321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	4	Endereço 4
+13	34560090123	715432218	Ana dias                                                                                            	ana.dias@email.com	31987604021	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	4	Endereço 3
+14	23456080312	176543119	Maria dias                                                                                          	maria.dias@email.com	21081043211	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	4	Endereço 2
+15	1234071301 	917154121	João dias                                                                                           	joao.dias@email.com	11907604321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	4	Endereço 1
+16	56789011145	541219176	Teresa triz                                                                                         	teresa.triz@email.com	51917654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	3	Endereço 5
+17	45678902134	651321187	Carlos triz                                                                                         	carlos.triz@email.com	41917654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	3	Endereço 4
+18	34567892223	761432298	Ana triz                                                                                            	ana.triz@email.com	31987654311	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	3	Endereço 3
+19	23456782312	871543119	Maria triz                                                                                          	maria.triz@email.com	21987154321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	3	Endereço 2
+20	12345672301	981654121	João triz                                                                                           	joao.triz@email.com	11987651321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	3	Endereço 1
+21	56789712145	503219176	vitor                                                                                               	vitor.@email.com	51987614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	5	Endereço 5
+22	45678701134	604321187	gabriel                                                                                             	gabriel.@email.com	41982654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	5	Endereço 4
+23	34567790223	705432298	vitoria                                                                                             	vitoria.@email.com	31982654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	5	Endereço 3
+24	23456779312	806543119	jucelino                                                                                            	jucelino.@email.com	21927654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	5	Endereço 2
+25	10345678301	907654121	junior                                                                                              	junior.@email.com	11987624321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	5	Endereço 1
+26	56389712145	303239176	vitor dias                                                                                          	vitor.dias@email.com	51987614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	5	Endereço 5
+27	45373701134	634323187	gabriel dias                                                                                        	gabriel.dias@email.com	41912614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	5	Endereço 4
+28	34563790223	735433298	vitoria dias                                                                                        	vitoria.dias@email.com	31982154321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	5	Endereço 3
+29	23453779312	836543119	jucelino dias                                                                                       	jucelino.dias@email.com	21127154321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	5	Endereço 2
+30	11145678301	903634121	junior dias                                                                                         	junior.dias@email.com	11987624121	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	5	Endereço 1
+31	56789412145	540009176	vitor santos                                                                                        	vitor.santos@email.com	51987614421	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	6	Endereço 5
+32	45674701134	644321187	gabriel santos                                                                                      	gabriel.santos@email.com	41984654321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	6	Endereço 4
+33	34567490223	704432298	vitoria santos                                                                                      	vitoria.santos@email.com	31984654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	6	Endereço 3
+34	23454779312	806543149	jucelino santos                                                                                     	jucelino.santos@email.com	21427654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	6	Endereço 2
+35	12344678301	907644121	junior santos                                                                                       	junior.santos@email.com	14987424321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	6	Endereço 1
+36	56789717145	503719176	isabela                                                                                             	isabela.@email.com	51987614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	7	Endereço 5
+37	45678707134	607321187	davi                                                                                                	davi.@email.com	41982657321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	7	Endereço 4
+38	34567797223	707432298	giovanna                                                                                            	giovanna.@email.com	31972654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	7	Endereço 3
+39	23456777312	807543119	fernanda                                                                                            	fernanda.@email.com	21977654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	7	Endereço 2
+40	12345677301	002654121	caio                                                                                                	caio.@email.com	11987724321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	7	Endereço 1
+41	56789787145	503719876	isabela santos                                                                                      	isabela.santos@email.com	51988614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	8	Endereço 5
+42	45678807134	607821187	davi santos                                                                                         	davi.santos@email.com	41982658321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	8	Endereço 4
+43	34567798223	708482298	giovanna santos                                                                                     	giovanna.santos@email.com	31982654321	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	8	Endereço 3
+44	23456778312	808543119	fernanda santos                                                                                     	fernanda.santos@email.com	21987654321	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	8	Endereço 2
+45	01345678301	908654121	caio santos                                                                                         	caio.santos@email.com	11988724321	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	8	Endereço 1
+46	56789717115	544419176	isabela dias                                                                                        	isabela.dias@email.com	51997614321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	9	Endereço 5
+47	45678709134	607441197	davi dias                                                                                           	davi.dias@email.com	41982657391	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	9	Endereço 4
+48	34567797213	707442298	giovanna dias                                                                                       	giovannadias.@email.com	31926543211	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	9	Endereço 3
+49	23456793111	804493119	fernanda dias                                                                                       	fernanda.dias@email.com	21976543211	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	9	Endereço 2
+50	12345679301	904459121	caio dias                                                                                           	caio.dias@email.com	19877243211	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	9	Endereço 1
+51	56789713145	303719176	isabela dias C                                                                                      	isabela.diasC@email.com	51997634321	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	10	Endereço 5
+52	45678703134	307321197	davi dias C                                                                                         	davi.diasC@email.com	41982637391	f	Atendente	2.00	R$ 2.000,00	R$ 2.040,00	10	Endereço 4
+53	34567793223	307932298	giovanna dias C                                                                                     	giovannadias.C@email.com	31923543211	f	Faxineira	0.00	R$ 1.200,00	R$ 1.200,00	10	Endereço 3
+54	2345679312 	307593119	fernanda dias C                                                                                     	fernanda.diasC@email.com	21936543211	t	Gerente	10.00	R$ 5.000,00	R$ 5.500,00	10	Endereço 2
+55	12345673301	307659121	caio dias C                                                                                         	caio.diasC@email.com	19873243211	t	Farmaceutico	5.00	R$ 3.000,00	R$ 3.050,00	10	Endereço 1
+\.
+
+
+--
+-- TOC entry 3648 (class 0 OID 120394)
+-- Dependencies: 240
+-- Data for Name: lote; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.lote (id, id_produto, nome, quantidade, data_despacho, id_filial) FROM stdin;
+12	12	Lote A1T	100	2024-03-23	2
+13	13	Lote B2T	150	2024-03-24	2
+14	14	Lote C3T	200	2024-03-25	2
+15	15	Lote D4T	250	2024-03-26	2
+16	16	Lote E5T	300	2024-03-27	2
+17	17	Lote F6T	350	2024-03-28	2
+22	22	Lote D4T	250	2024-03-26	2
+23	23	Lote A1R	100	2024-03-23	3
+26	26	Lote D4R	250	2024-03-26	3
+27	27	Lote E5R	300	2024-03-27	3
+35	35	Lote B2W	150	2024-03-24	4
+4	4	Lote D4	249	2024-03-26	1
+5	5	Lote E5	298	2024-03-27	1
+6	6	Lote F6	347	2024-03-28	1
+7	7	Lote G7	399	2024-03-29	1
+8	8	Lote A1	93	2024-03-23	1
+9	9	Lote B2	148	2024-03-24	1
+10	10	Lote C3	193	2024-03-25	1
+11	11	Lote D4	248	2024-03-26	1
+30	30	Lote A1R	98	2024-03-23	3
+18	18	Lote G7T	393	2024-03-29	2
+19	19	Lote A1T	93	2024-03-23	2
+20	20	Lote B2T	143	2024-03-24	2
+21	21	Lote C3T	193	2024-03-25	2
+31	31	Lote B2R	148	2024-03-24	3
+32	32	Lote C3R	199	2024-03-25	3
+33	33	Lote D4R	247	2024-03-26	3
+34	34	Lote A1W	93	2024-03-23	4
+28	28	Lote F6R	279	2024-03-28	3
+29	29	Lote G7R	383	2024-03-29	3
+24	24	Lote B2R	142	2024-03-24	3
+25	25	Lote C3R	192	2024-03-25	3
+1	1	Lote A1	95	2024-03-23	1
+2	2	Lote B2	143	2024-03-24	1
+3	3	Lote C3	192	2024-03-25	1
+\.
+
+
+--
+-- TOC entry 3650 (class 0 OID 120412)
+-- Dependencies: 242
+-- Data for Name: principio_ativo; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.principio_ativo (id, nome) FROM stdin;
+1	Paracetamol
+2	Amoxicilina
+3	Zinco Piritiona
+4	Fluoreto de Sódio
+5	Aluminum Chlorohydrate
+\.
+
+
+--
+-- TOC entry 3646 (class 0 OID 120384)
+-- Dependencies: 238
+-- Data for Name: produto; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.produto (id, nome, preco, marca, tipo_remedio, prescricao_medica, tipo_tarja, forma_de_administracao, composicao_remedio, data_validade, data_fabricacao, secao) FROM stdin;
+1	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+2	Amoxicilina	R$ 25,90	Eurofarma	Antibiótico	t	Tarja Vermelha	Oral	Amoxicilina Triidratada 500mg	2026-02-01	2023-02-01	Medicamentos
+3	Omeprazol	R$ 18,50	Aché	Antiulceroso	f	Sem Tarja	Oral	Omeprazol 20mg	2026-03-01	2023-03-01	Medicamentos
+4	Paracetamol	R$ 10,00	Cimed	Analgésico	f	Sem Tarja	Oral	Paracetamol 500mg	2026-04-01	2023-04-01	Medicamentos
+5	Losartana Potássica	R$ 22,90	Sandoz	Anti-hipertensivo	f	Sem Tarja	Oral	Losartana Potássica 50mg	2026-05-01	2023-05-01	Medicamentos
+6	Shampoo Anticaspa	R$ 25,90	ClearMen	\N	f	\N	\N	Zinco Piritiona	2025-12-31	2023-01-01	Higiene
+7	Creme Dental	R$ 12,50	Colgate	\N	f	\N	\N	Fluoreto de Sódio	2025-12-31	2023-01-01	Higiene
+8	Desodorante Roll-On	R$ 15,00	Rexona	\N	f	\N	\N	Aqua, Aluminum Chlorohydrate	2025-12-31	2023-01-01	Higiene
+9	Protetor Solar FPS 50	R$ 49,90	Nivea	\N	f	\N	\N	Avobenzone, Octocrylene	2025-12-31	2023-01-01	Cuidados Pessoais
+10	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+11	Dipirona	R$ 15,00	Medley	Analgésico	f	Sem Tarja	Oral	Dipirona Sódica 500mg	2026-01-01	2023-01-01	Medicamentos
+12	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+13	Amoxicilina	R$ 25,90	Eurofarma	Antibiótico	t	Tarja Vermelha	Oral	Amoxicilina Triidratada 500mg	2026-02-01	2023-02-01	Medicamentos
+14	Omeprazol	R$ 18,50	Aché	Antiulceroso	f	Sem Tarja	Oral	Omeprazol 20mg	2026-03-01	2023-03-01	Medicamentos
+15	Paracetamol	R$ 10,00	Cimed	Analgésico	f	Sem Tarja	Oral	Paracetamol 500mg	2026-04-01	2023-04-01	Medicamentos
+16	Losartana Potássica	R$ 22,90	Sandoz	Anti-hipertensivo	f	Sem Tarja	Oral	Losartana Potássica 50mg	2026-05-01	2023-05-01	Medicamentos
+17	Shampoo Anticaspa	R$ 25,90	ClearMen	\N	f	\N	\N	Zinco Piritiona	2025-12-31	2023-01-01	Higiene
+18	Creme Dental	R$ 12,50	Colgate	\N	f	\N	\N	Fluoreto de Sódio	2025-12-31	2023-01-01	Higiene
+19	Desodorante Roll-On	R$ 15,00	Rexona	\N	f	\N	\N	Aqua, Aluminum Chlorohydrate	2025-12-31	2023-01-01	Higiene
+20	Protetor Solar FPS 50	R$ 49,90	Nivea	\N	f	\N	\N	Avobenzone, Octocrylene	2025-12-31	2023-01-01	Cuidados Pessoais
+21	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+22	Dipirona	R$ 15,00	Medley	Analgésico	f	Sem Tarja	Oral	Dipirona Sódica 500mg	2026-01-01	2023-01-01	Medicamentos
+23	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+24	Amoxicilina	R$ 25,90	Eurofarma	Antibiótico	t	Tarja Vermelha	Oral	Amoxicilina Triidratada 500mg	2026-02-01	2023-02-01	Medicamentos
+25	Omeprazol	R$ 18,50	Aché	Antiulceroso	f	Sem Tarja	Oral	Omeprazol 20mg	2026-03-01	2023-03-01	Medicamentos
+26	Paracetamol	R$ 10,00	Cimed	Analgésico	f	Sem Tarja	Oral	Paracetamol 500mg	2026-04-01	2023-04-01	Medicamentos
+27	Losartana Potássica	R$ 22,90	Sandoz	Anti-hipertensivo	f	Sem Tarja	Oral	Losartana Potássica 50mg	2026-05-01	2023-05-01	Medicamentos
+28	Shampoo Anticaspa	R$ 25,90	ClearMen	\N	f	\N	\N	Zinco Piritiona	2025-12-31	2023-01-01	Higiene
+29	Creme Dental	R$ 12,50	Colgate	\N	f	\N	\N	Fluoreto de Sódio	2025-12-31	2023-01-01	Higiene
+30	Desodorante Roll-On	R$ 15,00	Rexona	\N	f	\N	\N	Aqua, Aluminum Chlorohydrate	2025-12-31	2023-01-01	Higiene
+31	Protetor Solar FPS 50	R$ 49,90	Nivea	\N	f	\N	\N	Avobenzone, Octocrylene	2025-12-31	2023-01-01	Cuidados Pessoais
+32	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+33	Dipirona	R$ 15,00	Medley	Analgésico	f	Sem Tarja	Oral	Dipirona Sódica 500mg	2026-01-01	2023-01-01	Medicamentos
+34	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+35	Amoxicilina	R$ 25,90	Eurofarma	Antibiótico	t	Tarja Vermelha	Oral	Amoxicilina Triidratada 500mg	2026-02-01	2023-02-01	Medicamentos
+36	Omeprazol	R$ 18,50	Aché	Antiulceroso	f	Sem Tarja	Oral	Omeprazol 20mg	2026-03-01	2023-03-01	Medicamentos
+37	Paracetamol	R$ 10,00	Cimed	Analgésico	f	Sem Tarja	Oral	Paracetamol 500mg	2026-04-01	2023-04-01	Medicamentos
+38	Losartana Potássica	R$ 22,90	Sandoz	Anti-hipertensivo	f	Sem Tarja	Oral	Losartana Potássica 50mg	2026-05-01	2023-05-01	Medicamentos
+39	Shampoo Anticaspa	R$ 25,90	ClearMen	\N	f	\N	\N	Zinco Piritiona	2025-12-31	2023-01-01	Higiene
+40	Creme Dental	R$ 12,50	Colgate	\N	f	\N	\N	Fluoreto de Sódio	2025-12-31	2023-01-01	Higiene
+41	Desodorante Roll-On	R$ 15,00	Rexona	\N	f	\N	\N	Aqua, Aluminum Chlorohydrate	2025-12-31	2023-01-01	Higiene
+42	Protetor Solar FPS 50	R$ 49,90	Nivea	\N	f	\N	\N	Avobenzone, Octocrylene	2025-12-31	2023-01-01	Cuidados Pessoais
+43	Hidratante Corporal	R$ 29,90	Dove	\N	f	\N	\N	Glycerin, Paraffinum Liquidum	2025-12-31	2023-01-01	Cuidados Pessoais
+44	Dipirona	R$ 15,00	Medley	Analgésico	f	Sem Tarja	Oral	Dipirona Sódica 500mg	2026-01-01	2023-01-01	Medicamentos
+\.
+
+
+--
+-- TOC entry 3655 (class 0 OID 120454)
+-- Dependencies: 247
+-- Data for Name: produto_tem_principio; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.produto_tem_principio (id_produto, id_principio) FROM stdin;
+1	1
+2	2
+3	3
+4	4
+5	5
+6	1
+7	2
+8	3
+9	4
+10	5
+11	1
+12	2
+13	3
+14	4
+15	5
+16	1
+17	2
+18	3
+19	4
+20	5
+21	1
+22	2
+23	3
+24	4
+25	5
+26	1
+27	2
+28	3
+29	4
+30	5
+31	1
+32	2
+33	3
+34	4
+35	5
+36	1
+\.
+
+
+--
+-- TOC entry 3658 (class 0 OID 120476)
+-- Dependencies: 250
+-- Data for Name: tem_classe; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.tem_classe (id_produto, id_classe) FROM stdin;
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	1
+10	2
+11	3
+12	4
+13	5
+14	6
+15	7
+16	8
+17	1
+18	2
+19	3
+20	4
+21	5
+22	6
+23	7
+24	8
+25	1
+26	2
+27	3
+28	4
+29	5
+30	6
+31	7
+32	8
+33	1
+34	2
+35	3
+36	4
+\.
+
+
+--
+-- TOC entry 3652 (class 0 OID 120419)
+-- Dependencies: 244
+-- Data for Name: tem_venda; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.tem_venda (id, id_produto, id_venda, quantidade, preco, desconto) FROM stdin;
+1	1	1	2	R$ 25,90	0.00
+2	2	2	1	R$ 12,50	1.00
+3	3	3	3	R$ 15,00	0.00
+4	4	4	1	R$ 49,90	5.00
+5	5	5	2	R$ 29,90	2.00
+6	6	6	3	R$ 15,00	0.00
+7	7	7	1	R$ 49,90	5.00
+8	8	8	7	R$ 29,90	2.00
+9	9	9	2	R$ 29,90	2.00
+10	10	10	7	R$ 29,90	2.00
+11	11	11	2	R$ 29,90	2.00
+12	30	30	2	R$ 25,90	0.00
+13	18	18	7	R$ 29,90	2.00
+14	19	19	7	R$ 29,90	2.00
+15	20	20	7	R$ 29,90	2.00
+16	21	21	7	R$ 29,90	2.00
+17	31	31	2	R$ 25,90	0.00
+18	32	32	1	R$ 12,50	1.00
+19	33	33	3	R$ 15,00	0.00
+20	34	34	7	R$ 49,90	5.00
+21	28	28	71	R$ 29,90	2.00
+22	29	29	17	R$ 29,90	2.00
+23	24	20	8	R$ 29,90	2.00
+24	25	21	8	R$ 29,90	2.00
+25	1	41	3	R$ 30,00	0.00
+26	2	40	1	R$ 40,00	5.00
+27	2	42	5	R$ 25,90	0.00
+28	3	43	5	R$ 12,50	1.00
+\.
+
+
+--
+-- TOC entry 3644 (class 0 OID 120359)
+-- Dependencies: 236
+-- Data for Name: venda; Type: TABLE DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+COPY rede_farmaceutica.venda (id, id_funcionario, id_cliente, data_venda, valor_total, nota_fiscal, id_filial) FROM stdin;
+22	2	22	2025-03-13	R$ 299,99	NF113156	2
+23	2	23	2025-03-23	R$ 299,99	NF121456	2
+24	2	24	2025-03-13	R$ 299,99	NF123456	2
+1	1	1	2024-03-23	R$ 359,79	NF123156	1
+2	1	2	2024-03-23	R$ 299,99	NF113456	1
+3	1	3	2024-03-23	R$ 355,49	NF123416	1
+4	1	4	2024-03-23	R$ 259,99	NF123156	1
+5	1	5	2024-03-23	R$ 254,19	NF113456	1
+6	2	6	2024-03-23	R$ 377,69	NF123451	1
+7	2	7	2024-03-23	R$ 249,99	NF121456	1
+8	2	8	2024-03-23	R$ 194,99	NF123456	1
+9	2	9	2024-03-23	R$ 200,19	NF113456	1
+10	2	10	2024-03-23	R$ 90,69	NF123156	1
+11	2	11	2024-03-23	R$ 269,99	NF123156	1
+30	4	20	2024-03-23	R$ 329,99	NF123451	4
+18	4	18	2024-03-23	R$ 212,49	NF121456	1
+19	4	19	2024-03-23	R$ 194,99	NF123456	1
+31	2	21	2025-03-23	R$ 399,79	NF123456	4
+32	2	22	2025-03-13	R$ 299,99	NF113156	4
+33	2	23	2025-03-23	R$ 344,99	NF121456	4
+34	2	24	2025-03-13	-R$ 537,21	NF123456	4
+28	4	18	2024-03-23	-R$ 1.538,91	NF121456	4
+29	4	19	2024-03-23	R$ 87,49	NF123456	4
+20	4	20	2024-03-23	-R$ 256,51	NF123451	1
+21	2	21	2025-03-23	-R$ 57,31	NF123456	2
+41	1	2	2024-04-02	R$ 389,69	NF111056	1
+40	1	1	2024-04-02	R$ 196,39	NF122056	1
+42	1	3	2024-04-02	R$ 429,49	NF124016	1
+43	1	4	2024-04-02	R$ 299,99	NF121056	1
+\.
+
+
+--
+-- TOC entry 3781 (class 0 OID 0)
+-- Dependencies: 248
+-- Name: classe_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.classe_id_seq', 8, true);
+
+
+--
+-- TOC entry 3782 (class 0 OID 0)
+-- Dependencies: 234
+-- Name: cliente_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.cliente_id_seq', 50, true);
+
+
+--
+-- TOC entry 3783 (class 0 OID 0)
+-- Dependencies: 245
+-- Name: fornece_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.fornece_id_seq', 29, true);
+
+
+--
+-- TOC entry 3784 (class 0 OID 0)
+-- Dependencies: 230
+-- Name: fornecedor_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.fornecedor_id_seq', 10, true);
+
+
+--
+-- TOC entry 3785 (class 0 OID 0)
+-- Dependencies: 232
+-- Name: funcionario_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.funcionario_id_seq', 55, true);
+
+
+--
+-- TOC entry 3786 (class 0 OID 0)
+-- Dependencies: 239
+-- Name: lote_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.lote_id_seq', 35, true);
+
+
+--
+-- TOC entry 3787 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: one_by_one_filial; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.one_by_one_filial', 10, true);
+
+
+--
+-- TOC entry 3788 (class 0 OID 0)
+-- Dependencies: 228
+-- Name: one_by_one_venda; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.one_by_one_venda', 44, true);
+
+
+--
+-- TOC entry 3789 (class 0 OID 0)
+-- Dependencies: 241
+-- Name: principio_ativo_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.principio_ativo_id_seq', 5, true);
+
+
+--
+-- TOC entry 3790 (class 0 OID 0)
+-- Dependencies: 237
+-- Name: produto_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.produto_id_seq', 44, true);
+
+
+--
+-- TOC entry 3791 (class 0 OID 0)
+-- Dependencies: 243
+-- Name: tem_venda_id_seq; Type: SEQUENCE SET; Schema: rede_farmaceutica; Owner: root
+--
+
+SELECT pg_catalog.setval('rede_farmaceutica.tem_venda_id_seq', 28, true);
+
+
+--
+-- TOC entry 3447 (class 2606 OID 120356)
+-- Name: cliente cliente_cpf_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.cliente
+    ADD CONSTRAINT cliente_cpf_key UNIQUE (cpf);
+
+
+--
+-- TOC entry 3449 (class 2606 OID 120358)
+-- Name: cliente cliente_email_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.cliente
+    ADD CONSTRAINT cliente_email_key UNIQUE (email);
+
+
+--
+-- TOC entry 3431 (class 2606 OID 120316)
+-- Name: filial filial_cnpj_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.filial
+    ADD CONSTRAINT filial_cnpj_key UNIQUE (cnpj);
+
+
+--
+-- TOC entry 3435 (class 2606 OID 120327)
+-- Name: fornecedor fornecedor_cnpj_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornecedor
+    ADD CONSTRAINT fornecedor_cnpj_key UNIQUE (cnpj);
+
+
+--
+-- TOC entry 3439 (class 2606 OID 120337)
+-- Name: funcionario funcionario_cpf_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario
+    ADD CONSTRAINT funcionario_cpf_key UNIQUE (cpf);
+
+
+--
+-- TOC entry 3441 (class 2606 OID 120341)
+-- Name: funcionario funcionario_email_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario
+    ADD CONSTRAINT funcionario_email_key UNIQUE (email);
+
+
+--
+-- TOC entry 3443 (class 2606 OID 120339)
+-- Name: funcionario funcionario_rg_key; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario
+    ADD CONSTRAINT funcionario_rg_key UNIQUE (rg);
+
+
+--
+-- TOC entry 3457 (class 2606 OID 120400)
+-- Name: lote pk_composta_lote_produto; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.lote
+    ADD CONSTRAINT pk_composta_lote_produto PRIMARY KEY (id, id_produto);
+
+
+--
+-- TOC entry 3469 (class 2606 OID 120475)
+-- Name: classe pk_id_classe; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.classe
+    ADD CONSTRAINT pk_id_classe PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3451 (class 2606 OID 120354)
+-- Name: cliente pk_id_cliente; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.cliente
+    ADD CONSTRAINT pk_id_cliente PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3433 (class 2606 OID 120314)
+-- Name: filial pk_id_filial; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.filial
+    ADD CONSTRAINT pk_id_filial PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3465 (class 2606 OID 120443)
+-- Name: fornece pk_id_fornece; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornece
+    ADD CONSTRAINT pk_id_fornece PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3437 (class 2606 OID 120325)
+-- Name: fornecedor pk_id_fornecedor; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornecedor
+    ADD CONSTRAINT pk_id_fornecedor PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3445 (class 2606 OID 120335)
+-- Name: funcionario pk_id_funcionario; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario
+    ADD CONSTRAINT pk_id_funcionario PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3459 (class 2606 OID 120417)
+-- Name: principio_ativo pk_id_principio_ativo; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.principio_ativo
+    ADD CONSTRAINT pk_id_principio_ativo PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3455 (class 2606 OID 120392)
+-- Name: produto pk_id_produto; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.produto
+    ADD CONSTRAINT pk_id_produto PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3467 (class 2606 OID 120458)
+-- Name: produto_tem_principio pk_id_produto_tem_principio; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.produto_tem_principio
+    ADD CONSTRAINT pk_id_produto_tem_principio PRIMARY KEY (id_produto, id_principio);
+
+
+--
+-- TOC entry 3471 (class 2606 OID 120480)
+-- Name: tem_classe pk_id_tem_classe; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_classe
+    ADD CONSTRAINT pk_id_tem_classe PRIMARY KEY (id_produto, id_classe);
+
+
+--
+-- TOC entry 3461 (class 2606 OID 120424)
+-- Name: tem_venda pk_id_tem_venda; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_venda
+    ADD CONSTRAINT pk_id_tem_venda PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3453 (class 2606 OID 120367)
+-- Name: venda pk_id_venda; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.venda
+    ADD CONSTRAINT pk_id_venda PRIMARY KEY (id);
+
+
+--
+-- TOC entry 3463 (class 2606 OID 120426)
+-- Name: tem_venda uq_produto_venda; Type: CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_venda
+    ADD CONSTRAINT uq_produto_venda UNIQUE (id_produto, id_venda);
+
+
+--
+-- TOC entry 3490 (class 2620 OID 120494)
+-- Name: tem_venda tr_atualizar_valor_total_venda_e_aplicar_desconto_aniversario; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER tr_atualizar_valor_total_venda_e_aplicar_desconto_aniversario AFTER INSERT ON rede_farmaceutica.tem_venda FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.atualizar_valor_total_venda_e_aplicar_desconto_aniversario();
+
+
+--
+-- TOC entry 3491 (class 2620 OID 120492)
+-- Name: tem_venda tr_diminuir_quantidade_no_lote; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER tr_diminuir_quantidade_no_lote BEFORE INSERT ON rede_farmaceutica.tem_venda FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.diminuir_quantidade_no_lote();
+
+
+--
+-- TOC entry 3488 (class 2620 OID 120498)
+-- Name: venda tr_permissao_venda; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER tr_permissao_venda BEFORE INSERT ON rede_farmaceutica.venda FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.permissao_venda();
+
+
+--
+-- TOC entry 3489 (class 2620 OID 120502)
+-- Name: lote verifica_validade_antes_inserir_lote; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER verifica_validade_antes_inserir_lote BEFORE INSERT ON rede_farmaceutica.lote FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.verifica_validade_produto();
+
+
+--
+-- TOC entry 3487 (class 2620 OID 120500)
+-- Name: cliente verificar_contato_cliente; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER verificar_contato_cliente BEFORE INSERT OR UPDATE ON rede_farmaceutica.cliente FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.verificar_atualizar_contato_cliente();
+
+
+--
+-- TOC entry 3486 (class 2620 OID 120496)
+-- Name: funcionario verificar_contato_funcionario; Type: TRIGGER; Schema: rede_farmaceutica; Owner: root
+--
+
+CREATE TRIGGER verificar_contato_funcionario BEFORE INSERT OR UPDATE ON rede_farmaceutica.funcionario FOR EACH ROW EXECUTE FUNCTION rede_farmaceutica.verificar_atualizar_contato_funcionario();
+
+
+--
+-- TOC entry 3484 (class 2606 OID 120486)
+-- Name: tem_classe fk_id_classe_in_tem_classe; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_classe
+    ADD CONSTRAINT fk_id_classe_in_tem_classe FOREIGN KEY (id_classe) REFERENCES rede_farmaceutica.classe(id);
+
+
+--
+-- TOC entry 3473 (class 2606 OID 120373)
+-- Name: venda fk_id_cliente_in_venda; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.venda
+    ADD CONSTRAINT fk_id_cliente_in_venda FOREIGN KEY (id_cliente) REFERENCES rede_farmaceutica.cliente(id);
+
+
+--
+-- TOC entry 3472 (class 2606 OID 120342)
+-- Name: funcionario fk_id_filial_in_funcionario; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.funcionario
+    ADD CONSTRAINT fk_id_filial_in_funcionario FOREIGN KEY (id_filial) REFERENCES rede_farmaceutica.filial(id);
+
+
+--
+-- TOC entry 3476 (class 2606 OID 120406)
+-- Name: lote fk_id_filial_in_lote; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.lote
+    ADD CONSTRAINT fk_id_filial_in_lote FOREIGN KEY (id_filial) REFERENCES rede_farmaceutica.filial(id);
+
+
+--
+-- TOC entry 3474 (class 2606 OID 120378)
+-- Name: venda fk_id_filial_in_venda; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.venda
+    ADD CONSTRAINT fk_id_filial_in_venda FOREIGN KEY (id_filial) REFERENCES rede_farmaceutica.filial(id);
+
+
+--
+-- TOC entry 3480 (class 2606 OID 120444)
+-- Name: fornece fk_id_fornecedor_in_fornece; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornece
+    ADD CONSTRAINT fk_id_fornecedor_in_fornece FOREIGN KEY (id_fornecedor) REFERENCES rede_farmaceutica.fornecedor(id);
+
+
+--
+-- TOC entry 3475 (class 2606 OID 120368)
+-- Name: venda fk_id_funcionario_in_venda; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.venda
+    ADD CONSTRAINT fk_id_funcionario_in_venda FOREIGN KEY (id_funcionario) REFERENCES rede_farmaceutica.funcionario(id);
+
+
+--
+-- TOC entry 3482 (class 2606 OID 120464)
+-- Name: produto_tem_principio fk_id_principio_tem_principio; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.produto_tem_principio
+    ADD CONSTRAINT fk_id_principio_tem_principio FOREIGN KEY (id_principio) REFERENCES rede_farmaceutica.principio_ativo(id);
+
+
+--
+-- TOC entry 3481 (class 2606 OID 120449)
+-- Name: fornece fk_id_produto_in_fornece; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.fornece
+    ADD CONSTRAINT fk_id_produto_in_fornece FOREIGN KEY (id_lote, id_produto) REFERENCES rede_farmaceutica.lote(id, id_produto);
+
+
+--
+-- TOC entry 3485 (class 2606 OID 120481)
+-- Name: tem_classe fk_id_produto_in_tem_classe; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_classe
+    ADD CONSTRAINT fk_id_produto_in_tem_classe FOREIGN KEY (id_produto) REFERENCES rede_farmaceutica.produto(id);
+
+
+--
+-- TOC entry 3478 (class 2606 OID 120432)
+-- Name: tem_venda fk_id_produto_in_tem_venda; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_venda
+    ADD CONSTRAINT fk_id_produto_in_tem_venda FOREIGN KEY (id_produto) REFERENCES rede_farmaceutica.produto(id);
+
+
+--
+-- TOC entry 3483 (class 2606 OID 120459)
+-- Name: produto_tem_principio fk_id_produto_tem_principio; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.produto_tem_principio
+    ADD CONSTRAINT fk_id_produto_tem_principio FOREIGN KEY (id_produto) REFERENCES rede_farmaceutica.produto(id);
+
+
+--
+-- TOC entry 3479 (class 2606 OID 120427)
+-- Name: tem_venda fk_id_venda_in_tem_venda; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.tem_venda
+    ADD CONSTRAINT fk_id_venda_in_tem_venda FOREIGN KEY (id_venda) REFERENCES rede_farmaceutica.venda(id);
+
+
+--
+-- TOC entry 3477 (class 2606 OID 120401)
+-- Name: lote lote_id_produto_fkey; Type: FK CONSTRAINT; Schema: rede_farmaceutica; Owner: root
+--
+
+ALTER TABLE ONLY rede_farmaceutica.lote
+    ADD CONSTRAINT lote_id_produto_fkey FOREIGN KEY (id_produto) REFERENCES rede_farmaceutica.produto(id);
+
+
+--
+-- TOC entry 3668 (class 0 OID 0)
+-- Dependencies: 8
+-- Name: SCHEMA public; Type: ACL; Schema: -; Owner: root
+--
+
+REVOKE USAGE ON SCHEMA public FROM PUBLIC;
+
+
+--
+-- TOC entry 3660 (class 0 OID 120524)
+-- Dependencies: 254 3662
+-- Name: desempenho_funcionario; Type: MATERIALIZED VIEW DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+REFRESH MATERIALIZED VIEW rede_farmaceutica.desempenho_funcionario;
+
+
+--
+-- TOC entry 3659 (class 0 OID 120518)
+-- Dependencies: 253 3662
+-- Name: vendas_mensais; Type: MATERIALIZED VIEW DATA; Schema: rede_farmaceutica; Owner: root
+--
+
+REFRESH MATERIALIZED VIEW rede_farmaceutica.vendas_mensais;
+
+
+-- Completed on 2024-04-14 21:22:51 -04
+
+--
+-- PostgreSQL database dump complete
+--
+
