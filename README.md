@@ -25,6 +25,6 @@ O desenvolvimento do projeto foi baseado no seguinte stack tecnológico:
 | --- | --- | --- | --- |
 | Anthony Ricardo Rodrigues Rezende | <img src="./Membros/anthony.jpeg" alt="Foto do Anthony" width="100"/> | anthony_rodriguespereira@outlook.com | [LinkedIn do Anthony](https://www.linkedin.com/in/anthony-ricardo-rodrigues-rezende-486917227/) |
 | Alan Bruno Moraes Costa | <img src="./Membros/alanB.jpeg" alt="Foto do Alan" width="100"/> | alanbrunomoraescosta18@hotmail.com | [LinkedIn do Alan](https://www.linkedin.com/in/alan-morais-4861322b0) |
-| Vinicius Padilha Vieira | <img src="./Membros/vinicius.jpeg" alt="Foto do Vinicius" width="100"/> | vinicius_padilhavieira@outlook.com | [LinkedIn do Vinicius](https://www.linkedin.com/in/vinicius-padilha-vieira-486917227/) |
+| Vinicius Padilha Vieira | <img src="./Membros/vinicius.jpeg" alt="Foto do Vinicius" width="100"/> | viniciuspadilhavieira@hotmail.com | [LinkedIn do Vinicius](https://www.linkedin.com/in/vinicius-padilha-vieira-486917227/) |
 
 ##
